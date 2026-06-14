@@ -11,11 +11,13 @@ class ZaloGroupsRepository {
   final Dio _dio;
 
   Future<ZaloGroupCatalogSyncResult> syncGroups(
-    Iterable<ZaloGroup> groups,
-  ) async {
+    Iterable<ZaloGroup> groups, {
+    required String zaloAccountId,
+  }) async {
     final response = await _dio.post<dynamic>(
       _syncPath,
       data: {
+        'zalo_account_id': zaloAccountId,
         'groups': groups
             .map(
               (group) => <String, dynamic>{
@@ -34,7 +36,10 @@ class ZaloGroupsRepository {
       },
     );
 
-    return ZaloGroupCatalogSyncResult.fromJson(_asMap(response.data));
+    final raw = _asMap(response.data);
+    final payload =
+        raw['data'] is Map ? _asMap(raw['data'] as Map) : raw;
+    return ZaloGroupCatalogSyncResult.fromJson(payload);
   }
 
   Future<List<ZaloGroupCatalogEntry>> getMyGroups() async {
@@ -74,7 +79,7 @@ class ZaloGroupsRepository {
     }
 
     final payload = _asMap(data);
-    final items = payload['groups'] ?? payload['items'];
+    final items = payload['data'] ?? payload['groups'] ?? payload['items'];
     if (items is List || items is List<dynamic>) {
       return _asList(items);
     }
