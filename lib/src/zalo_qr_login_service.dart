@@ -26,11 +26,14 @@ class ZaloQrLoginService {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
-  /// Client hints kept consistent with [userAgent] (Chrome 130). Sending the
-  /// Chrome UA without these made the fingerprint look automated to Zalo, which
-  /// increased "unknown device" warnings.
-  static const String _secChUa =
-      '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"';
+  /// Client hints suy ra trực tiếp từ [userAgent] (zca-js PR #303). `sec-ch-ua`
+  /// và `sec-ch-ua-platform` PHẢI khớp Chrome version/OS trong User-Agent — nếu
+  /// lệch, anti-bot của Zalo phát hiện fingerprint mismatch và ban session.
+  static final String _secChUa =
+      '"Chromium";v="${zaloChromeMajorVersion(userAgent)}", '
+      '"Google Chrome";v="${zaloChromeMajorVersion(userAgent)}", '
+      '"Not?A_Brand";v="99"';
+  static final String _secChUaPlatform = '"${zaloSecChUaPlatform(userAgent)}"';
 
   /// Long-lived cookies Zalo uses to recognize a device across logins.
   ///
@@ -535,7 +538,7 @@ class ZaloQrLoginService {
       'accept-language': 'vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7',
       'sec-ch-ua': _secChUa,
       'sec-ch-ua-mobile': '?0',
-      'sec-ch-ua-platform': '"Windows"',
+      'sec-ch-ua-platform': _secChUaPlatform,
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
@@ -571,6 +574,31 @@ class ZaloQrLoginService {
       throw const ZaloQrExpiredException('Mã QR đã hết hạn. Vui lòng tạo lại.');
     }
   }
+}
+
+/// Suy ra giá trị `sec-ch-ua-platform` từ User-Agent (zca-js PR #303).
+///
+/// Header platform PHẢI khớp OS trong User-Agent, nếu không anti-bot của Zalo
+/// phát hiện fingerprint mismatch và ban session. Thứ tự: Windows → macOS →
+/// Linux → fallback "Windows" (an toàn nhất).
+String zaloSecChUaPlatform(String userAgent) {
+  if (RegExp('Windows', caseSensitive: false).hasMatch(userAgent)) {
+    return 'Windows';
+  }
+  if (RegExp('Macintosh|Mac OS X', caseSensitive: false).hasMatch(userAgent)) {
+    return 'macOS';
+  }
+  if (RegExp('Linux|X11', caseSensitive: false).hasMatch(userAgent)) {
+    return 'Linux';
+  }
+  return 'Windows';
+}
+
+/// Trích xuất Chrome major version từ User-Agent (zca-js PR #303), dùng để điền
+/// `sec-ch-ua` cho khớp UA. Fallback "130" nếu UA không phải Chrome/Chromium.
+String zaloChromeMajorVersion(String userAgent) {
+  final match = RegExp(r'Chrome/(\d+)').firstMatch(userAgent);
+  return match?.group(1) ?? '130';
 }
 
 String? extractZaloLoginVersion(String html) {

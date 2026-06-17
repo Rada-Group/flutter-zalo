@@ -54,7 +54,9 @@ class ZaloDartClient {
        _extraVersions = snapshot.session.extraVersions;
 
   static const _apiType = 30;
-  static const _apiVersion = 671;
+  // zpw_ver: phải khớp API version hiện hành của Zalo Web. Bump 671 -> 685 theo
+  // zca-js PR #327 — version cũ bị server từ chối gây lỗi session/đăng nhập.
+  static const _apiVersion = 685;
   static const _language = 'vi';
   static const _computerName = 'Web';
   static const _chatOrigin = 'https://chat.zalo.me';
@@ -715,6 +717,25 @@ class ZaloDartClient {
     }
   }
 
+  /// Giải mã realtime payload, trả về `null` (thay vì ném lỗi) nếu gói tin không
+  /// giải mã được. Ported từ zca-js PR #303: một số event reaction/hệ thống gửi
+  /// gói không decode được — bỏ qua thay vì để lỗi làm sập listener.
+  Future<Map<String, dynamic>?> _tryDecodeRealtimeEvent(
+    Map<String, dynamic> parsed,
+  ) async {
+    try {
+      return await decodeZaloRealtimeEvent(parsed, _cipherKey);
+    } catch (error) {
+      zaloLog(
+        'Bỏ qua gói tin Zalo realtime không giải mã được '
+        '(bình thường với một số event reaction/hệ thống)',
+        name: _logName,
+        data: {'reason': error.toString()},
+      );
+      return null;
+    }
+  }
+
   Future<void> _handleRealtimeData(dynamic data) async {
     try {
       final uid = _uid;
@@ -767,7 +788,10 @@ class ZaloDartClient {
       }
 
       if (frame.cmd == 501 && frame.subCmd == 0) {
-        final payload = await decodeZaloRealtimeEvent(parsed, _cipherKey);
+        final payload = await _tryDecodeRealtimeEvent(parsed);
+        if (payload == null) {
+          return;
+        }
         _logZaloRealtimePayload(
           'ZALO REALTIME DECODED PAYLOAD',
           frame,
@@ -787,7 +811,10 @@ class ZaloDartClient {
       }
 
       if (frame.cmd == 521 && frame.subCmd == 0) {
-        final payload = await decodeZaloRealtimeEvent(parsed, _cipherKey);
+        final payload = await _tryDecodeRealtimeEvent(parsed);
+        if (payload == null) {
+          return;
+        }
         _logZaloRealtimePayload(
           'ZALO REALTIME DECODED PAYLOAD',
           frame,
