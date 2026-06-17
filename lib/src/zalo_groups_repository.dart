@@ -13,11 +13,14 @@ class ZaloGroupsRepository {
   Future<ZaloGroupCatalogSyncResult> syncGroups(
     Iterable<ZaloGroup> groups, {
     required String zaloAccountId,
+    String? zaloAccountName,
   }) async {
     final response = await _dio.post<dynamic>(
       _syncPath,
       data: {
         'zalo_account_id': zaloAccountId,
+        if (zaloAccountName != null && zaloAccountName.trim().isNotEmpty)
+          'zalo_account_name': zaloAccountName.trim(),
         'groups': groups
             .map(
               (group) => <String, dynamic>{
