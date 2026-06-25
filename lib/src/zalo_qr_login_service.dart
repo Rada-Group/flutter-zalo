@@ -56,6 +56,11 @@ class ZaloQrLoginService {
   static const _loginPageUrl =
       'https://id.zalo.me/account?continue=https%3A%2F%2Fchat.zalo.me%2F';
   static const _continueChat = 'https://chat.zalo.me/';
+  // Bootstrap + QR generate dùng continue=zalo.me/pc giống hệt zca-js / các
+  // reference đang chạy được. Trước đây ta dùng chat.zalo.me cho cả bootstrap
+  // và Zalo phục vụ luồng QR "đa lớp" (enabledMultiLayer) khiến confirm trả
+  // "Mã đăng nhập không hợp lệ". Scan + confirm vẫn giữ continue=chat.zalo.me.
+  static const _continuePc = 'https://zalo.me/pc';
   static const _checkSessionUrl =
       'https://id.zalo.me/account/checksession'
       '?continue=https%3A%2F%2Fchat.zalo.me%2Findex.html';
@@ -111,14 +116,14 @@ class ZaloQrLoginService {
 
     await _postForm(
       'https://id.zalo.me/account/logininfo',
-      body: {'continue': _continueChat, 'v': version},
+      body: {'continue': _continuePc, 'v': version},
       cancelToken: cancelToken,
     );
     zaloLog('Completed logininfo bootstrap', name: _logName);
 
     await _postForm(
       'https://id.zalo.me/account/verify-client',
-      body: {'type': 'device', 'continue': _continueChat, 'v': version},
+      body: {'type': 'device', 'continue': _continuePc, 'v': version},
       cancelToken: cancelToken,
     );
     zaloLog('Completed verify-client bootstrap', name: _logName);
@@ -154,6 +159,9 @@ class ZaloQrLoginService {
     );
     yield ZaloQrLoginEvent.scanned(profile: scannedProfile);
 
+    // Confirm dùng mã generate gốc như mọi reference (zca-js/Elixir/Go). Mã
+    // "xoay" mà luồng đa lớp trả về ở scan KHÔNG dùng cho confirm (đã thử,
+    // vẫn bị "Mã đăng nhập không hợp lệ").
     await _waitForConfirm(
       version: version,
       code: generated.code,
@@ -248,7 +256,7 @@ class ZaloQrLoginService {
   }) async {
     final response = await _postJson(
       'https://id.zalo.me/account/authen/qr/generate',
-      body: {'continue': _continueChat, 'v': version},
+      body: {'continue': _continuePc, 'v': version},
       cancelToken: cancelToken,
     );
 
@@ -309,6 +317,22 @@ class ZaloQrLoginService {
       if (data == null) {
         throw const ZaloLoginException('Không nhận được thông tin từ QR scan.');
       }
+
+      // Chẩn đoán luồng "đa lớp" (enabledMultiLayer): luồng thường trả
+      // {display_name, avatar}; luồng đa lớp trả status + chatUid + code/token/
+      // image MỚI nhưng KHÔNG có display_name. Log lại để biết Zalo đang phục
+      // vụ luồng nào. Confirm vẫn dùng mã generate gốc (xem startLogin).
+      final scanCode = data['code'] as String?;
+      zaloLog(
+        'QR scan payload',
+        name: _logName,
+        data: {
+          'status': data['status'],
+          'hasDisplayName': data['display_name'] != null,
+          'codeRotated':
+              scanCode != null && scanCode.isNotEmpty && scanCode != code,
+        },
+      );
 
       return ZaloProfile(
         displayName: data['display_name'] as String? ?? 'Tài khoản Zalo',
