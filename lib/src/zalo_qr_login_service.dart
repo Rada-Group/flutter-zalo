@@ -343,6 +343,10 @@ class ZaloQrLoginService {
         throw const ZaloLoginException('Không nhận được thông tin từ QR scan.');
       }
 
+      // Chẩn đoán luồng "đa lớp" (enabledMultiLayer): luồng thường trả
+      // {display_name, avatar}; luồng đa lớp trả status + chatUid + code/token/
+      // image MỚI nhưng KHÔNG có display_name. Log lại để biết Zalo đang phục
+      // vụ luồng nào. Confirm vẫn dùng mã generate gốc (xem startLogin).
       final scanCode = data['code'] as String?;
       zaloLog(
         'QR scan payload',
