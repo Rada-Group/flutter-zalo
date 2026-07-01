@@ -69,6 +69,9 @@ class ZaloQrLoginService {
   static const _qrExpiresAfter = Duration(seconds: 100);
   static const _logName = 'PAM.ZaloQR';
 
+  /// Delay before re-polling after a transient network error, to avoid a hot loop.
+  static const _pollRetryDelay = Duration(seconds: 2);
+
   final Dio _client;
   final Future<String> Function(String userAgent) _imeiResolver;
   final Future<String?> Function()? _deviceCookieReader;
@@ -289,11 +292,25 @@ class ZaloQrLoginService {
     while (true) {
       _throwIfExpired(expiresAt);
       attempts += 1;
-      final response = await _postJson(
-        'https://id.zalo.me/account/authen/qr/waiting-scan',
-        body: {'code': code, 'continue': _continueChat, 'v': version},
-        cancelToken: cancelToken,
-      );
+      Map<String, dynamic> response;
+      try {
+        response = await _postJson(
+          'https://id.zalo.me/account/authen/qr/waiting-scan',
+          body: {'code': code, 'continue': _continueChat, 'v': version},
+          cancelToken: cancelToken,
+        );
+      } on DioException catch (error) {
+        if (!_isTransientNetworkError(error)) {
+          rethrow;
+        }
+        zaloLog(
+          'Waiting scan hit transient network error, retrying',
+          name: _logName,
+          data: {'attempt': attempts, 'type': error.type.name},
+        );
+        await Future<void>.delayed(_pollRetryDelay);
+        continue;
+      }
 
       final errorCode = _asInt(response['error_code']);
       if (attempts == 1 || attempts % 5 == 0 || errorCode != 8) {
@@ -351,17 +368,31 @@ class ZaloQrLoginService {
     while (true) {
       _throwIfExpired(expiresAt);
       attempts += 1;
-      final response = await _postJson(
-        'https://id.zalo.me/account/authen/qr/waiting-confirm',
-        body: {
-          'code': code,
-          'gToken': '',
-          'gAction': 'CONFIRM_QR',
-          'continue': _continueChat,
-          'v': version,
-        },
-        cancelToken: cancelToken,
-      );
+      Map<String, dynamic> response;
+      try {
+        response = await _postJson(
+          'https://id.zalo.me/account/authen/qr/waiting-confirm',
+          body: {
+            'code': code,
+            'gToken': '',
+            'gAction': 'CONFIRM_QR',
+            'continue': _continueChat,
+            'v': version,
+          },
+          cancelToken: cancelToken,
+        );
+      } on DioException catch (error) {
+        if (!_isTransientNetworkError(error)) {
+          rethrow;
+        }
+        zaloLog(
+          'Waiting confirm hit transient network error, retrying',
+          name: _logName,
+          data: {'attempt': attempts, 'type': error.type.name},
+        );
+        await Future<void>.delayed(_pollRetryDelay);
+        continue;
+      }
 
       final errorCode = _asInt(response['error_code']);
       if (attempts == 1 || attempts % 5 == 0 || errorCode != 8) {
@@ -596,6 +627,24 @@ class ZaloQrLoginService {
   void _throwIfExpired(DateTime expiresAt) {
     if (DateTime.now().isAfter(expiresAt)) {
       throw const ZaloQrExpiredException('Mã QR đã hết hạn. Vui lòng tạo lại.');
+    }
+  }
+
+  /// True for transport hiccups (incl. the socket abort backgrounding the app
+  /// mid-poll causes) that should retry the poll instead of failing the login.
+  bool _isTransientNetworkError(DioException error) {
+    switch (error.type) {
+      case DioExceptionType.cancel:
+      case DioExceptionType.badCertificate:
+      case DioExceptionType.badResponse:
+        return false;
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+      case DioExceptionType.connectionError:
+        return true;
+      case DioExceptionType.unknown:
+        return error.error is SocketException || error.error is HttpException;
     }
   }
 }
