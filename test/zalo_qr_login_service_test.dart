@@ -8,6 +8,60 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_zalo/src/zalo_models.dart';
 import 'package:flutter_zalo/src/zalo_qr_login_service.dart';
 
+/// Trả về response cho các bước bootstrap chung (login page, logininfo,
+/// verify-client, generate) — giống hệt nhau ở mọi test trong file này.
+/// Trả `null` nếu [path] không phải một trong các bước bootstrap, để caller
+/// tự xử lý các endpoint còn lại (waiting-scan/waiting-confirm).
+ResponseBody? _bootstrapResponse(String path) {
+  switch (path) {
+    case '/account':
+      return _html(
+        '<script src="https://stc-zlogin.zdn.vn/main-1.0.0.js"></script>',
+      );
+    case '/account/logininfo':
+    case '/account/verify-client':
+    case '/account/checksession':
+      return _json(const {'error_code': 0});
+    case '/account/authen/qr/generate':
+      return _json({
+        'data': {
+          'code': 'qr-code-1',
+          'image': 'data:image/png;base64,${base64Encode(<int>[1, 2, 3])}',
+        },
+      });
+    case '/jr/userinfo':
+      return _json({
+        'error_code': 0,
+        'data': {
+          'logged': true,
+          'session_chat_valid': true,
+          'info': {
+            'name': 'Test User',
+            'avatar': '',
+          },
+        },
+      });
+    default:
+      return null;
+  }
+}
+
+ResponseBody _json(Map<String, dynamic> body) => ResponseBody.fromString(
+  jsonEncode(body),
+  200,
+  headers: {
+    Headers.contentTypeHeader: [Headers.jsonContentType],
+  },
+);
+
+ResponseBody _html(String body) => ResponseBody.fromString(
+  body,
+  200,
+  headers: {
+    Headers.contentTypeHeader: ['text/html'],
+  },
+);
+
 /// Scripts the QR login HTTP calls, injecting one connection-abort error on the first waiting-scan poll.
 class _ScriptedAdapter implements HttpClientAdapter {
   int waitingScanCalls = 0;
@@ -22,23 +76,11 @@ class _ScriptedAdapter implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     final path = options.uri.path;
+    final bootstrap = _bootstrapResponse(path);
+    if (bootstrap != null) {
+      return bootstrap;
+    }
 
-    if (path == '/account') {
-      return _html(
-        '<script src="https://stc-zlogin.zdn.vn/main-1.0.0.js"></script>',
-      );
-    }
-    if (path == '/account/logininfo' || path == '/account/verify-client') {
-      return _json(const {'error_code': 0});
-    }
-    if (path == '/account/authen/qr/generate') {
-      return _json({
-        'data': {
-          'code': 'qr-code-1',
-          'image': 'data:image/png;base64,${base64Encode(<int>[1, 2, 3])}',
-        },
-      });
-    }
     if (path == '/account/authen/qr/waiting-scan') {
       waitingScanCalls += 1;
       if (waitingScanCalls == 1) {
@@ -59,22 +101,63 @@ class _ScriptedAdapter implements HttpClientAdapter {
 
     throw StateError('Unexpected request: $path');
   }
+}
 
-  ResponseBody _json(Map<String, dynamic> body) => ResponseBody.fromString(
-    jsonEncode(body),
-    200,
-    headers: {
-      Headers.contentTypeHeader: [Headers.jsonContentType],
-    },
-  );
+/// Trả về thành công ngay lần poll đầu tiên cho cả waiting-scan lẫn
+/// waiting-confirm — dùng để chứng minh một kết quả thành công thật từ
+/// server luôn được ưu tiên hơn đồng hồ hết hạn cục bộ.
+class _ImmediateSuccessAdapter implements HttpClientAdapter {
+  @override
+  void close({bool force = false}) {}
 
-  ResponseBody _html(String body) => ResponseBody.fromString(
-    body,
-    200,
-    headers: {
-      Headers.contentTypeHeader: ['text/html'],
-    },
-  );
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final path = options.uri.path;
+    final bootstrap = _bootstrapResponse(path);
+    if (bootstrap != null) {
+      return bootstrap;
+    }
+    if (path == '/account/authen/qr/waiting-scan') {
+      return _json({
+        'error_code': 0,
+        'data': {'display_name': 'Tài xế A', 'avatar': ''},
+      });
+    }
+    if (path == '/account/authen/qr/waiting-confirm') {
+      return _json(const {'error_code': 0});
+    }
+    throw StateError('Unexpected request: $path');
+  }
+}
+
+/// Luôn trả `error_code: 8` ("còn đang chờ") cho waiting-scan/waiting-confirm
+/// — dùng để chứng minh service vẫn báo hết hạn đúng khi thật sự hết thời
+/// gian và server không bao giờ xác nhận.
+class _AlwaysWaitingAdapter implements HttpClientAdapter {
+  @override
+  void close({bool force = false}) {}
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    final path = options.uri.path;
+    final bootstrap = _bootstrapResponse(path);
+    if (bootstrap != null) {
+      return bootstrap;
+    }
+    if (path == '/account/authen/qr/waiting-scan' ||
+        path == '/account/authen/qr/waiting-confirm') {
+      return _json(const {'error_code': 8});
+    }
+    throw StateError('Unexpected request: $path');
+  }
 }
 
 void main() {
@@ -108,6 +191,49 @@ void main() {
       await subscription.cancel();
 
       expect(profile.displayName, 'Tài xế A');
+    },
+  );
+
+  test(
+    'succeeds even if the local QR timer already elapsed, as long as the '
+    'server confirms on the very next poll',
+    () async {
+      final dio = Dio(
+        BaseOptions(responseType: ResponseType.plain, validateStatus: (_) => true),
+      );
+      dio.httpClientAdapter = _ImmediateSuccessAdapter();
+      final service = ZaloQrLoginService(
+        client: dio,
+        qrExpiresAfter: Duration.zero,
+      );
+
+      final events = <ZaloQrLoginEvent>[];
+      await service.startLogin().forEach(events.add);
+
+      expect(
+        events.map((event) => event.type),
+        contains(ZaloQrLoginEventType.success),
+      );
+    },
+  );
+
+  test(
+    'throws ZaloQrExpiredException once the timer is up and the server '
+    'keeps saying "still waiting"',
+    () async {
+      final dio = Dio(
+        BaseOptions(responseType: ResponseType.plain, validateStatus: (_) => true),
+      );
+      dio.httpClientAdapter = _AlwaysWaitingAdapter();
+      final service = ZaloQrLoginService(
+        client: dio,
+        qrExpiresAfter: Duration.zero,
+      );
+
+      await expectLater(
+        service.startLogin().drain<void>(),
+        throwsA(isA<ZaloQrExpiredException>()),
+      );
     },
   );
 }

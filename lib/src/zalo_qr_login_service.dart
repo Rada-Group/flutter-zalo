@@ -17,10 +17,12 @@ class ZaloQrLoginService {
     Future<String> Function(String userAgent)? imeiResolver,
     Future<String?> Function()? deviceCookieReader,
     Future<void> Function(String cookie)? deviceCookieWriter,
+    Duration qrExpiresAfter = const Duration(seconds: 100),
   }) : _client = _buildHttpClient(client),
        _imeiResolver = imeiResolver ?? _defaultImeiResolver,
        _deviceCookieReader = deviceCookieReader,
-       _deviceCookieWriter = deviceCookieWriter;
+       _deviceCookieWriter = deviceCookieWriter,
+       _qrExpiresAfter = qrExpiresAfter;
 
   static const String userAgent =
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -66,7 +68,6 @@ class ZaloQrLoginService {
       '?continue=https%3A%2F%2Fchat.zalo.me%2Findex.html';
   static const _userInfoUrl = 'https://jr.chat.zalo.me/jr/userinfo';
   static const _chatHomeUrl = 'https://chat.zalo.me/';
-  static const _qrExpiresAfter = Duration(seconds: 100);
   static const _logName = 'PAM.ZaloQR';
 
   /// Delay before re-polling after a transient network error, to avoid a hot loop.
@@ -76,6 +77,7 @@ class ZaloQrLoginService {
   final Future<String> Function(String userAgent) _imeiResolver;
   final Future<String?> Function()? _deviceCookieReader;
   final Future<void> Function(String cookie)? _deviceCookieWriter;
+  final Duration _qrExpiresAfter;
   final _ZaloCookieJar _cookieJar = _ZaloCookieJar();
 
   static Dio _buildHttpClient(Dio? client) {
@@ -290,7 +292,6 @@ class ZaloQrLoginService {
   }) async {
     var attempts = 0;
     while (true) {
-      _throwIfExpired(expiresAt);
       attempts += 1;
       Map<String, dynamic> response;
       try {
@@ -308,6 +309,9 @@ class ZaloQrLoginService {
           name: _logName,
           data: {'attempt': attempts, 'type': error.type.name},
         );
+        // Only give up here if we're truly out of time — a request that
+        // just failed transiently deserves one more try before that.
+        _throwIfExpired(expiresAt);
         await Future<void>.delayed(_pollRetryDelay);
         continue;
       }
@@ -321,6 +325,10 @@ class ZaloQrLoginService {
         );
       }
       if (errorCode == 8) {
+        // "Still waiting" — a real server answer (success/decline/other
+        // error) always takes priority over a locally-elapsed clock, so the
+        // expiry check only happens once we know we have to loop again.
+        _throwIfExpired(expiresAt);
         continue;
       }
       if (errorCode != 0) {
@@ -335,10 +343,6 @@ class ZaloQrLoginService {
         throw const ZaloLoginException('Không nhận được thông tin từ QR scan.');
       }
 
-      // Chẩn đoán luồng "đa lớp" (enabledMultiLayer): luồng thường trả
-      // {display_name, avatar}; luồng đa lớp trả status + chatUid + code/token/
-      // image MỚI nhưng KHÔNG có display_name. Log lại để biết Zalo đang phục
-      // vụ luồng nào. Confirm vẫn dùng mã generate gốc (xem startLogin).
       final scanCode = data['code'] as String?;
       zaloLog(
         'QR scan payload',
@@ -366,7 +370,6 @@ class ZaloQrLoginService {
   }) async {
     var attempts = 0;
     while (true) {
-      _throwIfExpired(expiresAt);
       attempts += 1;
       Map<String, dynamic> response;
       try {
@@ -390,6 +393,7 @@ class ZaloQrLoginService {
           name: _logName,
           data: {'attempt': attempts, 'type': error.type.name},
         );
+        _throwIfExpired(expiresAt);
         await Future<void>.delayed(_pollRetryDelay);
         continue;
       }
@@ -403,6 +407,7 @@ class ZaloQrLoginService {
         );
       }
       if (errorCode == 8) {
+        _throwIfExpired(expiresAt);
         continue;
       }
       if (errorCode == -13) {
