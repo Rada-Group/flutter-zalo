@@ -643,10 +643,6 @@ class ZaloQrLoginService {
   /// mid-poll causes) that should retry the poll instead of failing the login.
   bool _isTransientNetworkError(DioException error) {
     switch (error.type) {
-      case DioExceptionType.cancel:
-      case DioExceptionType.badCertificate:
-      case DioExceptionType.badResponse:
-        return false;
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
@@ -654,6 +650,10 @@ class ZaloQrLoginService {
         return true;
       case DioExceptionType.unknown:
         return error.error is SocketException || error.error is HttpException;
+      // cancel, badCertificate, badResponse, transformTimeout (dio >=5.10) và
+      // mọi enum mới khác đều coi là lỗi không nên retry.
+      default:
+        return false;
     }
   }
 }

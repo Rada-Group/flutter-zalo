@@ -72,6 +72,14 @@ class ZaloDartClient {
   static const _abnormalCloseCode = 1006;
   static const _duplicateConnectionCloseCode = 3000;
   static const _kickConnectionCloseCode = 3003;
+  // App-specific close code we send when the liveness watchdog force-closes a
+  // silently dead (half-open) socket. Must sit in the 3000-4999 app range that
+  // dart:io allows us to send, and must NOT collide with the session
+  // invalidation codes (3000/3003) which route to re-login instead of retry.
+  static const _livenessCloseCode = 4001;
+  // A connect attempt that never resolves would otherwise pin
+  // `_isConnectingListener = true` forever and block every future reconnect.
+  static const _connectTimeout = Duration(seconds: 20);
   static const _logName = 'PAM.ZaloClient';
 
   final Dio _client;
@@ -93,6 +101,7 @@ class ZaloDartClient {
   ZaloWebSocketConnection? _listenerSocket;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
+  Timer? _livenessTimer;
   String? _cipherKey;
   int _wsMessageId = 0;
   int _currentWsIndex = 0;
@@ -262,6 +271,8 @@ class ZaloDartClient {
     _reconnectTimer = null;
     _pingTimer?.cancel();
     _pingTimer = null;
+    _livenessTimer?.cancel();
+    _livenessTimer = null;
     _cipherKey = null;
     _wsMessageId = 0;
 
@@ -676,7 +687,10 @@ class ZaloDartClient {
         name: _logName,
         data: {'uri': uri.toString(), 'wsIndex': _currentWsIndex},
       );
-      final socket = await _socketConnector(uri, headers: _buildWsHeaders(uri));
+      final socket = await _socketConnector(
+        uri,
+        headers: _buildWsHeaders(uri),
+      ).timeout(_connectTimeout);
 
       if (_manualListenerStop) {
         await socket.close(_manualCloseCode, 'manual');
@@ -691,7 +705,12 @@ class ZaloDartClient {
         data: {'wsIndex': _currentWsIndex, 'closeCode': socket.closeCode},
       );
       _listenerSubscription = socket.stream.listen(
-        (data) => unawaited(_handleRealtimeData(data)),
+        (data) {
+          // Any inbound frame proves the socket is still live. Reset the
+          // watchdog so a genuinely healthy connection is never force-closed.
+          _markListenerAlive();
+          unawaited(_handleRealtimeData(data));
+        },
         onError: (error, stackTrace) {
           _messageController?.addError(error, stackTrace);
         },
@@ -703,6 +722,9 @@ class ZaloDartClient {
         ),
         cancelOnError: false,
       );
+      // Start the liveness watchdog immediately: a socket that connects but
+      // never even delivers the cipher-key frame is already dead.
+      _armLivenessWatchdog();
     } catch (error, stackTrace) {
       zaloLog(
         'Realtime listener connection failed',
@@ -857,10 +879,17 @@ class ZaloDartClient {
   Future<void> _handleListenerClosed(int closeCode, String closeReason) async {
     _pingTimer?.cancel();
     _pingTimer = null;
+    _livenessTimer?.cancel();
+    _livenessTimer = null;
     _cipherKey = null;
 
-    await _listenerSubscription?.cancel();
+    // Do NOT await this cancel: _handleListenerClosed runs from the socket
+    // subscription's own onDone, and awaiting a self-cancel can stall the whole
+    // reconnect. The old subscription is bound to the now-dead socket, so a
+    // fire-and-forget teardown is safe — the retry below builds a fresh one.
+    final closingSubscription = _listenerSubscription;
     _listenerSubscription = null;
+    unawaited(closingSubscription?.cancel());
     _listenerSocket = null;
 
     if (_manualListenerStop || !_retryListenerOnClose) {
@@ -891,6 +920,12 @@ class ZaloDartClient {
         'Realtime listener closed without retry schedule',
         name: _logName,
         data: {'closeCode': closeCode, 'closeReason': closeReason},
+      );
+      // Do NOT die silently: surface the closure so consumers (the background
+      // service isolate) get an onError and can re-arm the listener, mirroring
+      // how zca-js emits a `closed` event for the caller to restart.
+      _messageController?.addError(
+        ZaloListenerClosedException(closeCode, closeReason),
       );
       return;
     }
@@ -929,6 +964,52 @@ class ZaloDartClient {
         requireId: false,
       );
     });
+  }
+
+  // The application ping (cmd 2) is fire-and-forget and there is no pong ack,
+  // so a half-open socket (mobile NAT timeout, carrier drop, wifi<->4G switch)
+  // stays "connected" from the OS view while silently delivering nothing —
+  // onDone/onError never fire. This watchdog is the only thing that notices:
+  // if no inbound frame arrives within the grace window, we force-close the
+  // socket, which routes through onDone -> _handleListenerClosed -> reconnect.
+  void _armLivenessWatchdog() {
+    _livenessTimer?.cancel();
+    final pingIntervalMs = _asInt(_socketSettings['ping_interval']);
+    final safePingIntervalMs = pingIntervalMs > 0 ? pingIntervalMs : 18000;
+    // Zalo pushes NOTHING on an idle connection (verified on-device: only the
+    // cipher-key frame arrives, then silence), so "no inbound data" cannot mean
+    // "dead" until it has lasted well beyond any normal quiet spell. A busy
+    // ride-hailing group resets this constantly via real message frames, so the
+    // watchdog only ever fires on genuinely stalled/half-open sockets. Keep the
+    // floor generous (5 min) to avoid churning a quiet-but-healthy connection.
+    final livenessMs = math.max(safePingIntervalMs * 10, 300000);
+    _livenessTimer = Timer(
+      Duration(milliseconds: livenessMs),
+      _onListenerStalled,
+    );
+  }
+
+  void _markListenerAlive() {
+    // Never resurrect the watchdog after a manual stop or once the socket is
+    // already gone — that would keep a dangling timer alive forever.
+    if (_manualListenerStop || _listenerSocket == null) {
+      return;
+    }
+    _armLivenessWatchdog();
+  }
+
+  void _onListenerStalled() {
+    final socket = _listenerSocket;
+    if (socket == null) {
+      return;
+    }
+    zaloLog(
+      'Realtime listener stalled (no data within liveness window), '
+      'forcing reconnect',
+      name: _logName,
+    );
+    // Force-close the dead socket; onDone drives the normal reconnect path.
+    unawaited(socket.close(_livenessCloseCode, 'liveness_timeout'));
   }
 
   void _sendRealtimeFrame({
@@ -1374,20 +1455,12 @@ class ZaloDartClient {
   }
 
   int? _nextFallbackRetryDelay(int closeCode) {
-    if (closeCode == _manualCloseCode ||
-        _isSessionInvalidationCloseCode(closeCode)) {
-      return null;
-    }
-
-    const retryableCloseCodes = <int>{
-      _abnormalCloseCode,
-      1001,
-      1005,
-      1011,
-      1012,
-      1013,
-    };
-    if (!retryableCloseCodes.contains(closeCode)) {
+    // Session invalidation (duplicate/kicked) is terminal — it needs a fresh
+    // login, not a reconnect — and is already routed away before we get here.
+    // A manual stop is caught earlier via `_manualListenerStop`, so a bare
+    // `_manualCloseCode` (1000) reaching this point means the SERVER closed us
+    // normally while we still want to listen: keep retrying instead of dying.
+    if (_isSessionInvalidationCloseCode(closeCode)) {
       return null;
     }
 
@@ -1664,6 +1737,21 @@ String? _quoteAttachPayload(ZaloQuote quote) {
   return jsonEncode(propertyExt);
 }
 
+/// Raised on the listener stream when the socket closes and the client has
+/// decided not to auto-retry (e.g. the server's configured retry budget is
+/// exhausted). Consumers should treat this as "the listener is down" and
+/// re-arm it, rather than assuming the stream is still live.
+class ZaloListenerClosedException implements Exception {
+  const ZaloListenerClosedException(this.closeCode, this.closeReason);
+
+  final int closeCode;
+  final String closeReason;
+
+  @override
+  String toString() =>
+      'ZaloListenerClosedException(code: $closeCode, reason: $closeReason)';
+}
+
 typedef ZaloSocketConnector =
     Future<ZaloWebSocketConnection> Function(
       Uri uri, {
@@ -1709,6 +1797,12 @@ Future<ZaloWebSocketConnection> _defaultSocketConnector(
   Map<String, dynamic>? headers,
 }) async {
   final socket = await WebSocket.connect(uri.toString(), headers: headers);
+  // NB: do NOT set `socket.pingInterval` here. Zalo's realtime server does not
+  // answer WebSocket protocol-level ping frames (it uses its own application
+  // ping, cmd 2), so dart:io would treat every unanswered pong as a dead
+  // connection and close with 1001 every ~2×interval — verified on-device as a
+  // ~40s reconnect churn that drops messages. Keepalive is the app-level ping;
+  // half-open detection is ZaloDartClient's receive watchdog + TCP send errors.
   return IoZaloWebSocketConnection(socket);
 }
 
