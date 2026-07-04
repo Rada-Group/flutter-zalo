@@ -22,7 +22,7 @@ class ZaloDartClient {
     String Function(int? minLength, int? maxLength)? randomStringBuilder,
     ZaloSocketConnector? socketConnector,
     Future<void> Function()? onSessionExpired,
-    Future<void> Function()? onSessionInvalidated,
+    Future<void> Function(ZaloSessionEndReason reason)? onSessionInvalidated,
   }) : _credentials = credentials,
        _firstLaunchTime =
            firstLaunchTime ?? DateTime.now().millisecondsSinceEpoch,
@@ -38,7 +38,7 @@ class ZaloDartClient {
     String Function(int? minLength, int? maxLength)? randomStringBuilder,
     ZaloSocketConnector? socketConnector,
     Future<void> Function()? onSessionExpired,
-    Future<void> Function()? onSessionInvalidated,
+    Future<void> Function(ZaloSessionEndReason reason)? onSessionInvalidated,
   }) : _credentials = snapshot.credentials,
        _firstLaunchTime = DateTime.now().millisecondsSinceEpoch,
        _randomStringBuilder = randomStringBuilder ?? _defaultRandomString,
@@ -88,7 +88,7 @@ class ZaloDartClient {
   final String Function(int? minLength, int? maxLength) _randomStringBuilder;
   final ZaloSocketConnector _socketConnector;
   final Future<void> Function()? _onSessionExpired;
-  final Future<void> Function()? _onSessionInvalidated;
+  final Future<void> Function(ZaloSessionEndReason reason)? _onSessionInvalidated;
 
   String? _uid;
   String? _secretKey;
@@ -801,7 +801,7 @@ class ZaloDartClient {
           frame.cmd == _duplicateConnectionCloseCode &&
           frame.subCmd == 0) {
         zaloLog('Zalo realtime duplicate connection frame', name: _logName);
-        await _handleSessionInvalidated();
+        await _handleSessionInvalidated(ZaloSessionEndReason.takenOver);
         return;
       }
 
@@ -907,7 +907,7 @@ class ZaloDartClient {
         name: _logName,
         data: {'closeCode': closeCode, 'closeReason': closeReason},
       );
-      await _handleSessionInvalidated();
+      await _handleSessionInvalidated(ZaloSessionEndReason.takenOver);
       return;
     }
 
@@ -1095,6 +1095,10 @@ class ZaloDartClient {
         'status': statusCode,
       },
     );
+    if (statusCode == 401) {
+      unawaited(_handleSessionInvalidated(ZaloSessionEndReason.unauthorized));
+      throw const ZaloLoginException('Zalo từ chối phiên đăng nhập (401).');
+    }
     if (statusCode < 200 || statusCode >= 400) {
       throw ZaloLoginException('Yêu cầu Zalo thất bại với mã $statusCode.');
     }
@@ -1282,7 +1286,7 @@ class ZaloDartClient {
         data: logData,
       );
       if (_isSessionInvalidationError(topLevelErrorCode)) {
-        unawaited(_handleSessionInvalidated());
+        unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
       } else if (_isSessionExpiredError(topLevelErrorCode, errorMessage)) {
         unawaited(_handleSessionExpired());
       }
@@ -1317,7 +1321,7 @@ class ZaloDartClient {
       }
       zaloLog('Zalo runtime nested error', name: _logName, data: logData);
       if (_isSessionInvalidationError(nestedErrorCode)) {
-        unawaited(_handleSessionInvalidated());
+        unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
       } else if (_isSessionExpiredError(nestedErrorCode, errorMessage)) {
         unawaited(_handleSessionExpired());
       }
@@ -1518,7 +1522,7 @@ class ZaloDartClient {
     }
   }
 
-  Future<void> _handleSessionInvalidated() async {
+  Future<void> _handleSessionInvalidated(ZaloSessionEndReason reason) async {
     if (_isHandlingSessionInvalidation) {
       return;
     }
@@ -1527,7 +1531,7 @@ class ZaloDartClient {
     try {
       await stopListener(closeStream: false);
       try {
-        await _onSessionInvalidated?.call();
+        await _onSessionInvalidated?.call(reason);
       } catch (_) {}
     } finally {
       _isHandlingSessionInvalidation = false;

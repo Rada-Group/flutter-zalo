@@ -1,6 +1,18 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+/// Vì sao một phiên Zalo runtime chấm dứt và cần đăng nhập lại.
+enum ZaloSessionEndReason {
+  /// HTTP 401 — Zalo từ chối phiên hiện tại.
+  unauthorized,
+
+  /// Tài khoản đăng nhập ở nơi khác / bị kick (WS 3000/3003) hoặc uid đổi.
+  takenOver,
+
+  /// error_code/message báo phiên hết hạn.
+  expired,
+}
+
 typedef StoredZaloCredentials = ({
   String cookie,
   String imei,
