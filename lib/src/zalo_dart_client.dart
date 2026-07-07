@@ -456,36 +456,64 @@ class ZaloDartClient {
     return List<ZaloFriend>.unmodifiable(friends);
   }
 
+  /// Backward-compatible: trả về map như trước, nay tự chunk + throttle.
   Future<Map<String, ZaloGroupInfo>> getGroupInfo(
-    Iterable<String> groupIds,
-  ) async {
-    final ids = groupIds
-        .map((groupId) => groupId.trim())
-        .where((groupId) => groupId.isNotEmpty)
-        .toList();
+    Iterable<String> groupIds, {
+    Map<String, int>? versions,
+  }) async {
+    final batch = await fetchGroupInfoBatch(groupIds, versions: versions);
+    return batch.infos;
+  }
 
-    if (ids.isEmpty) {
-      return const <String, ZaloGroupInfo>{};
+  /// Fetch group info theo id, tự chia lô ([batchSize]), giãn cách ([throttle])
+  /// và backoff khi lỗi. Trả về cả nhóm bị remove/unchanged để caller ngừng
+  /// retry những nhóm không còn lấy được info.
+  Future<ZaloGroupInfoBatch> fetchGroupInfoBatch(
+    Iterable<String> groupIds, {
+    Map<String, int>? versions,
+    int batchSize = 50,
+    Duration throttle = const Duration(milliseconds: 300),
+  }) async {
+    final chunks = chunkZaloIds(groupIds, batchSize);
+    if (chunks.isEmpty) {
+      return ZaloGroupInfoBatch.empty;
     }
 
-    final params = encodeZaloPayload(
-      _requireSecretKey(),
-      jsonEncode({
-        'gridVerMap': jsonEncode({for (final groupId in ids) groupId: 0}),
-      }),
-    );
-
+    final infos = <String, ZaloGroupInfo>{};
+    final removed = <String>[];
+    final unchanged = <String>[];
     final groupEndpoint = _serviceEndpoint('group');
-    final response = await _post(
-      _makeUrl('$groupEndpoint/api/group/getmg-v2'),
-      form: {'params': params},
-    );
-    final data = _asMap(_resolveResponseData(response));
-    final gridInfoMap = _asMap(data['gridInfoMap']);
 
-    return gridInfoMap.map(
-      (groupId, value) =>
-          MapEntry(groupId, ZaloGroupInfo.fromJson(_asMap(value))),
+    for (var i = 0; i < chunks.length; i++) {
+      final chunk = chunks[i];
+      final params = encodeZaloPayload(
+        _requireSecretKey(),
+        jsonEncode({
+          'gridVerMap': jsonEncode({
+            for (final groupId in chunk) groupId: versions?[groupId] ?? 0,
+          }),
+        }),
+      );
+      final response = await _postWithBackoff(
+        _makeUrl('$groupEndpoint/api/group/getmg-v2'),
+        form: {'params': params},
+      );
+      final batch = parseZaloGroupInfoResponse(
+        _asMap(_resolveResponseData(response)),
+      );
+      infos.addAll(batch.infos);
+      removed.addAll(batch.removedGroupIds);
+      unchanged.addAll(batch.unchangedGroupIds);
+
+      if (i < chunks.length - 1 && throttle > Duration.zero) {
+        await Future<void>.delayed(throttle);
+      }
+    }
+
+    return ZaloGroupInfoBatch(
+      infos: infos,
+      removedGroupIds: removed,
+      unchangedGroupIds: unchanged,
     );
   }
 
@@ -1063,6 +1091,25 @@ class ZaloDartClient {
       body: form,
       contentType: Headers.formUrlEncodedContentType,
     );
+  }
+
+  /// POST với exponential backoff cho lỗi tạm thời (rate-limit / mạng). Ném lại
+  /// lỗi sau [maxRetries] lần.
+  Future<Response<String>> _postWithBackoff(
+    String url, {
+    required Map<String, String> form,
+    int maxRetries = 3,
+  }) async {
+    for (var attempt = 1; ; attempt++) {
+      try {
+        return await _post(url, form: form);
+      } catch (error) {
+        if (attempt >= maxRetries) {
+          rethrow;
+        }
+        await Future<void>.delayed(Duration(milliseconds: 400 * attempt));
+      }
+    }
   }
 
   Future<Response<String>> _request(
