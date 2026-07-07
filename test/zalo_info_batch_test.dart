@@ -44,4 +44,30 @@ void main() {
       expect(batch.unchangedGroupIds, isEmpty);
     });
   });
+
+  group('parseZaloUserInfoResponse', () {
+    test('parses changed_profiles, strips _0 suffix, reads phonebook_version', () {
+      final batch = parseZaloUserInfoResponse({
+        'phonebook_version': 42,
+        'changed_profiles': {
+          'u1_0': {'userId': 'u1', 'displayName': 'Anh Ba', 'zaloName': 'ba', 'avatar': 'http://x'},
+        },
+        'unchanged_profiles': {'u2_0': {}},
+      });
+      expect(batch.phonebookVersion, 42);
+      expect(batch.infos.containsKey('u1'), isTrue);
+      expect(batch.infos['u1']!.displayName, 'Anh Ba');
+      expect(batch.infos['u1']!.avatarUrl, 'http://x');
+      expect(batch.unchangedUserIds, ['u2']);
+    });
+
+    test('falls back displayName -> zaloName when display missing', () {
+      final batch = parseZaloUserInfoResponse({
+        'changed_profiles': {
+          'u9': {'userId': 'u9', 'zaloName': 'chin'},
+        },
+      });
+      expect(batch.infos['u9']!.displayName, 'chin');
+    });
+  });
 }

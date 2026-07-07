@@ -522,6 +522,70 @@ ZaloGroupInfoBatch parseZaloGroupInfoResponse(Map<String, dynamic> data) {
   );
 }
 
+class ZaloUserInfo {
+  const ZaloUserInfo({
+    required this.userId,
+    required this.displayName,
+    required this.zaloName,
+    required this.avatarUrl,
+  });
+
+  factory ZaloUserInfo.fromJson(Map<String, dynamic> json) {
+    final zaloName = json['zaloName'] as String? ?? '';
+    final display = json['displayName'] as String? ?? '';
+    return ZaloUserInfo(
+      userId: json['userId'] as String? ?? '',
+      displayName: display.trim().isNotEmpty ? display : zaloName,
+      zaloName: zaloName,
+      avatarUrl: json['avatar'] as String? ?? json['avt'] as String?,
+    );
+  }
+
+  final String userId;
+  final String displayName;
+  final String zaloName;
+  final String? avatarUrl;
+}
+
+class ZaloUserInfoBatch {
+  const ZaloUserInfoBatch({
+    required this.infos,
+    required this.unchangedUserIds,
+    required this.phonebookVersion,
+  });
+
+  final Map<String, ZaloUserInfo> infos;
+  final List<String> unchangedUserIds;
+  final int phonebookVersion;
+
+  static const empty = ZaloUserInfoBatch(
+    infos: <String, ZaloUserInfo>{},
+    unchangedUserIds: <String>[],
+    phonebookVersion: 0,
+  );
+}
+
+String _stripPversionSuffix(String id) {
+  final idx = id.indexOf('_');
+  return idx <= 0 ? id : id.substring(0, idx);
+}
+
+/// Parse response đã giải mã của `friend/getprofiles/v2`.
+ZaloUserInfoBatch parseZaloUserInfoResponse(Map<String, dynamic> data) {
+  final changed = _asNullableMap(data['changed_profiles']) ?? const <String, dynamic>{};
+  final unchanged = _asNullableMap(data['unchanged_profiles']) ?? const <String, dynamic>{};
+  return ZaloUserInfoBatch(
+    infos: {
+      for (final entry in changed.entries)
+        _stripPversionSuffix(entry.key):
+            ZaloUserInfo.fromJson(_asMap(entry.value)),
+    },
+    unchangedUserIds:
+        unchanged.keys.map(_stripPversionSuffix).toList(growable: false),
+    phonebookVersion: _asInt(data['phonebook_version']),
+  );
+}
+
 class ZaloGroupSetting {
   const ZaloGroupSetting({
     required this.blockName,
