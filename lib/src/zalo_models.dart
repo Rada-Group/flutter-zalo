@@ -453,6 +453,7 @@ class ZaloGroupInfo {
     required this.avatarUrl,
     required this.setting,
     required this.isE2EE,
+    required this.version,
   });
 
   factory ZaloGroupInfo.fromJson(Map<String, dynamic> json) {
@@ -469,6 +470,7 @@ class ZaloGroupInfo {
       avatarUrl: json['avt'] as String? ?? json['avatar'] as String?,
       setting: ZaloGroupSetting.fromJson(_asNullableMap(json['setting'])),
       isE2EE: _asInt(json['e2ee']) == 1,
+      version: json['version']?.toString() ?? '',
     );
   }
 
@@ -484,8 +486,40 @@ class ZaloGroupInfo {
   final String? avatarUrl;
   final ZaloGroupSetting setting;
   final bool isE2EE;
+  final String version;
 
   bool get isCommunity => type == 2;
+}
+
+class ZaloGroupInfoBatch {
+  const ZaloGroupInfoBatch({
+    required this.infos,
+    required this.removedGroupIds,
+    required this.unchangedGroupIds,
+  });
+
+  final Map<String, ZaloGroupInfo> infos;
+  final List<String> removedGroupIds;
+  final List<String> unchangedGroupIds;
+
+  static const empty = ZaloGroupInfoBatch(
+    infos: <String, ZaloGroupInfo>{},
+    removedGroupIds: <String>[],
+    unchangedGroupIds: <String>[],
+  );
+}
+
+/// Parse response đã giải mã của `group/getmg-v2`.
+ZaloGroupInfoBatch parseZaloGroupInfoResponse(Map<String, dynamic> data) {
+  final gridInfoMap = _asNullableMap(data['gridInfoMap']) ?? const <String, dynamic>{};
+  return ZaloGroupInfoBatch(
+    infos: gridInfoMap.map(
+      (groupId, value) =>
+          MapEntry(groupId, ZaloGroupInfo.fromJson(_asMap(value))),
+    ),
+    removedGroupIds: _asStringList(data['removedsGroup']),
+    unchangedGroupIds: _asStringList(data['unchangedsGroup']),
+  );
 }
 
 class ZaloGroupSetting {
