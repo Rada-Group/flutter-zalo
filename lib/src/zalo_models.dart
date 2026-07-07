@@ -756,6 +756,30 @@ class ZaloQrLoginEvent {
   final ZaloLoginResult? result;
 }
 
+/// Chia danh sách id thành các lô ≤ [size] để tránh giới hạn số phần tử mỗi
+/// request. Trim, bỏ rỗng và dedup (giữ nguyên thứ tự xuất hiện).
+List<List<String>> chunkZaloIds(Iterable<String> ids, int size) {
+  if (size <= 0) {
+    throw ArgumentError.value(size, 'size', 'must be > 0');
+  }
+  final seen = <String>{};
+  final normalized = <String>[];
+  for (final raw in ids) {
+    final id = raw.trim();
+    if (id.isEmpty || !seen.add(id)) {
+      continue;
+    }
+    normalized.add(id);
+  }
+  final chunks = <List<String>>[];
+  for (var i = 0; i < normalized.length; i += size) {
+    chunks.add(
+      normalized.sublist(i, i + size > normalized.length ? normalized.length : i + size),
+    );
+  }
+  return chunks;
+}
+
 Map<String, dynamic> _asMap(dynamic value) {
   if (value is Map<String, dynamic>) {
     return value;
