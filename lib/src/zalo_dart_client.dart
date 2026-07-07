@@ -500,6 +500,7 @@ class ZaloDartClient {
       final response = await _postWithBackoff(
         _makeUrl('$profileEndpoint/api/social/friend/getprofiles/v2'),
         form: {'params': params},
+        invalidateSessionOn401: false,
       );
       final batch = parseZaloUserInfoResponse(
         _asMap(_resolveResponseData(response)),
@@ -562,6 +563,7 @@ class ZaloDartClient {
       final response = await _postWithBackoff(
         _makeUrl('$groupEndpoint/api/group/getmg-v2'),
         form: {'params': params},
+        invalidateSessionOn401: false,
       );
       final batch = parseZaloGroupInfoResponse(
         _asMap(_resolveResponseData(response)),
@@ -1149,25 +1151,37 @@ class ZaloDartClient {
   Future<Response<String>> _post(
     String url, {
     required Map<String, String> form,
+    bool invalidateSessionOn401 = true,
   }) {
     return _request(
       'POST',
       url,
       body: form,
       contentType: Headers.formUrlEncodedContentType,
+      invalidateSessionOn401: invalidateSessionOn401,
     );
   }
 
   /// POST với exponential backoff cho lỗi tạm thời (rate-limit / mạng). Ném lại
   /// lỗi sau [maxRetries] lần.
+  ///
+  /// [invalidateSessionOn401]: mặc định `true` (một 401 kéo theo end-session).
+  /// Đặt `false` cho các call phụ trợ/best-effort (vd. resolve tên+avatar
+  /// thread) để một 401 lẻ KHÔNG giật sập cả phiên realtime — caller tự bắt lỗi
+  /// và retry theo sự kiện.
   Future<Response<String>> _postWithBackoff(
     String url, {
     required Map<String, String> form,
     int maxRetries = 3,
+    bool invalidateSessionOn401 = true,
   }) async {
     for (var attempt = 1; ; attempt++) {
       try {
-        return await _post(url, form: form);
+        return await _post(
+          url,
+          form: form,
+          invalidateSessionOn401: invalidateSessionOn401,
+        );
       } catch (error) {
         if (attempt >= maxRetries) {
           rethrow;
@@ -1183,6 +1197,7 @@ class ZaloDartClient {
     Map<String, String>? headers,
     Object? body,
     String? contentType,
+    bool invalidateSessionOn401 = true,
   }) async {
     _logDecodedZaloRequest(method, url, body: body);
     final response = await _client.request<String>(
@@ -1208,7 +1223,9 @@ class ZaloDartClient {
       },
     );
     if (statusCode == 401) {
-      unawaited(_handleSessionInvalidated(ZaloSessionEndReason.unauthorized));
+      if (invalidateSessionOn401) {
+        unawaited(_handleSessionInvalidated(ZaloSessionEndReason.unauthorized));
+      }
       throw const ZaloLoginException('Zalo từ chối phiên đăng nhập (401).');
     }
     if (statusCode < 200 || statusCode >= 400) {
