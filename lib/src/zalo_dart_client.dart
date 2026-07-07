@@ -456,6 +456,70 @@ class ZaloDartClient {
     return List<ZaloFriend>.unmodifiable(friends);
   }
 
+  /// Backward-friendly convenience: trả map uid -> info.
+  Future<Map<String, ZaloUserInfo>> getUserInfo(
+    Iterable<String> userIds,
+  ) async {
+    final batch = await fetchUserInfoBatch(userIds);
+    return batch.infos;
+  }
+
+  /// Fetch profile người dùng theo uid cho thread 1-1 (`friend/getprofiles/v2`),
+  /// tự chunk + throttle + backoff. Response key được chuẩn hoá về uid gốc.
+  Future<ZaloUserInfoBatch> fetchUserInfoBatch(
+    Iterable<String> userIds, {
+    int batchSize = 50,
+    Duration throttle = const Duration(milliseconds: 300),
+  }) async {
+    final chunks = chunkZaloIds(userIds, batchSize);
+    if (chunks.isEmpty) {
+      return ZaloUserInfoBatch.empty;
+    }
+
+    final infos = <String, ZaloUserInfo>{};
+    final unchanged = <String>[];
+    var phonebookVersion = 0;
+    final profileEndpoint = _serviceEndpoint('profile');
+    final phonebook = _asInt(_extraVersions['phonebook']);
+
+    for (var i = 0; i < chunks.length; i++) {
+      final chunk = chunks[i];
+      final params = encodeZaloPayload(
+        _requireSecretKey(),
+        jsonEncode({
+          'phonebook_version': phonebook,
+          'friend_pversion_map': [
+            for (final id in chunk) id.contains('_') ? id : '${id}_0',
+          ],
+          'avatar_size': 120,
+          'language': _language,
+          'show_online_status': 1,
+          'imei': _credentials.imei,
+        }),
+      );
+      final response = await _postWithBackoff(
+        _makeUrl('$profileEndpoint/api/social/friend/getprofiles/v2'),
+        form: {'params': params},
+      );
+      final batch = parseZaloUserInfoResponse(
+        _asMap(_resolveResponseData(response)),
+      );
+      infos.addAll(batch.infos);
+      unchanged.addAll(batch.unchangedUserIds);
+      phonebookVersion = batch.phonebookVersion;
+
+      if (i < chunks.length - 1 && throttle > Duration.zero) {
+        await Future<void>.delayed(throttle);
+      }
+    }
+
+    return ZaloUserInfoBatch(
+      infos: infos,
+      unchangedUserIds: unchanged,
+      phonebookVersion: phonebookVersion,
+    );
+  }
+
   /// Backward-compatible: trả về map như trước, nay tự chunk + throttle.
   Future<Map<String, ZaloGroupInfo>> getGroupInfo(
     Iterable<String> groupIds, {
