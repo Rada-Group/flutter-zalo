@@ -503,7 +503,7 @@ class ZaloDartClient {
         invalidateSessionOn401: false,
       );
       final batch = parseZaloUserInfoResponse(
-        _asMap(_resolveResponseData(response)),
+        _asMap(_resolveResponseData(response, invalidateSessionOnError: false)),
       );
       infos.addAll(batch.infos);
       unchanged.addAll(batch.unchangedUserIds);
@@ -566,7 +566,7 @@ class ZaloDartClient {
         invalidateSessionOn401: false,
       );
       final batch = parseZaloGroupInfoResponse(
-        _asMap(_resolveResponseData(response)),
+        _asMap(_resolveResponseData(response, invalidateSessionOnError: false)),
       );
       infos.addAll(batch.infos);
       removed.addAll(batch.removedGroupIds);
@@ -1397,6 +1397,7 @@ class ZaloDartClient {
   dynamic _resolveResponseData(
     Response<String> response, {
     bool isEncrypted = true,
+    bool invalidateSessionOnError = true,
   }) {
     final payload = _decodeJson(response.data ?? '{}');
 
@@ -1414,10 +1415,12 @@ class ZaloDartClient {
         name: _logName,
         data: logData,
       );
-      if (_isSessionInvalidationError(topLevelErrorCode)) {
-        unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
-      } else if (_isSessionExpiredError(topLevelErrorCode, errorMessage)) {
-        unawaited(_handleSessionExpired());
+      if (invalidateSessionOnError) {
+        if (_isSessionInvalidationError(topLevelErrorCode)) {
+          unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
+        } else if (_isSessionExpiredError(topLevelErrorCode, errorMessage)) {
+          unawaited(_handleSessionExpired());
+        }
       }
       throw ZaloLoginException(errorMessage ?? 'Yêu cầu Zalo thất bại.');
     }
@@ -1449,10 +1452,12 @@ class ZaloDartClient {
         logData['errorMessage'] = errorMessage;
       }
       zaloLog('Zalo runtime nested error', name: _logName, data: logData);
-      if (_isSessionInvalidationError(nestedErrorCode)) {
-        unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
-      } else if (_isSessionExpiredError(nestedErrorCode, errorMessage)) {
-        unawaited(_handleSessionExpired());
+      if (invalidateSessionOnError) {
+        if (_isSessionInvalidationError(nestedErrorCode)) {
+          unawaited(_handleSessionInvalidated(ZaloSessionEndReason.takenOver));
+        } else if (_isSessionExpiredError(nestedErrorCode, errorMessage)) {
+          unawaited(_handleSessionExpired());
+        }
       }
       throw ZaloLoginException(
         errorMessage ?? 'Không giải mã được dữ liệu từ Zalo.',
