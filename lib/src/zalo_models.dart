@@ -453,7 +453,7 @@ class ZaloGroupInfo {
     required this.avatarUrl,
     required this.setting,
     required this.isE2EE,
-    required this.version,
+    this.version = '',
   });
 
   factory ZaloGroupInfo.fromJson(Map<String, dynamic> json) {

@@ -520,12 +520,13 @@ class ZaloDartClient {
     );
   }
 
-  /// Backward-compatible: trả về map như trước, nay tự chunk + throttle.
+  /// Backward-compatible: chữ ký giữ nguyên như trước, nay tự chunk + throttle.
+  /// Version-diff chỉ mở ở [fetchGroupInfoBatch] để không đổi chữ ký công khai
+  /// mà các caller/test-double hiện có đang override.
   Future<Map<String, ZaloGroupInfo>> getGroupInfo(
-    Iterable<String> groupIds, {
-    Map<String, int>? versions,
-  }) async {
-    final batch = await fetchGroupInfoBatch(groupIds, versions: versions);
+    Iterable<String> groupIds,
+  ) async {
+    final batch = await fetchGroupInfoBatch(groupIds);
     return batch.infos;
   }
 
