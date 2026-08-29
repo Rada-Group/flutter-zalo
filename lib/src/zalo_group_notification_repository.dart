@@ -36,6 +36,38 @@ class ZaloGroupNotificationRepository {
     );
   }
 
+  /// Mọi thread id (nhóm **và** chat 1-1) mà override đang bật `true` cho
+  /// [accountId].
+  ///
+  /// Đọc thẳng từ store thay vì đối chiếu với một danh sách nhóm/thread có sẵn:
+  /// đây mới là nguồn sự thật của tập opt-in, nên caller không phụ thuộc vào
+  /// việc group catalog hay thread store đã nạp xong hay chưa.
+  Future<Set<String>> enabledIds(String accountId) async {
+    final normalizedAccountId = accountId.trim();
+    if (normalizedAccountId.isEmpty) {
+      return const <String>{};
+    }
+
+    final storage = await _storageBuilder();
+    final prefix = '$_keyPrefix.$normalizedAccountId.';
+    final enabled = <String>{};
+    for (final key in storage.getKeys()) {
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+      if (storage.getBool(key) != true) {
+        continue;
+      }
+
+      final threadId = key.substring(prefix.length);
+      if (threadId.isNotEmpty) {
+        enabled.add(threadId);
+      }
+    }
+
+    return enabled;
+  }
+
   Future<void> clearAll() async {
     final storage = await _storageBuilder();
     final keys = storage
