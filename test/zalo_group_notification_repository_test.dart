@@ -83,4 +83,45 @@ void main() {
       expect(await repository.enabledIds('   '), isEmpty);
     });
   });
+
+  group('ZaloGroupNotificationRepository.disabledIds', () {
+    late _MemoryStorage storage;
+    late ZaloGroupNotificationRepository repository;
+
+    setUp(() {
+      storage = _MemoryStorage();
+      repository = ZaloGroupNotificationRepository(() async => storage);
+    });
+
+    test('returns only the ids explicitly turned off', () async {
+      await repository.setEnabled(
+        accountId: 'acc-1',
+        groupId: 'group-on',
+        enabled: true,
+      );
+      await repository.setEnabled(
+        accountId: 'acc-1',
+        groupId: 'group-off',
+        enabled: false,
+      );
+
+      expect(await repository.disabledIds('acc-1'), {'group-off'});
+      expect(await repository.enabledIds('acc-1'), {'group-on'});
+    });
+
+    test('never leaks another account entries', () async {
+      await repository.setEnabled(
+        accountId: 'acc-2',
+        groupId: 'group-off',
+        enabled: false,
+      );
+
+      expect(await repository.disabledIds('acc-1'), isEmpty);
+      expect(await repository.disabledIds('acc-2'), {'group-off'});
+    });
+
+    test('blank account yields an empty set', () async {
+      expect(await repository.disabledIds('   '), isEmpty);
+    });
+  });
 }

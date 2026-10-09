@@ -1,5 +1,7 @@
 ## Unreleased
 
+* feat(notifications): `ZaloGroupNotificationRepository.disabledIds` trả các
+  thread người dùng đã chủ động tắt (dùng cho mặc định BẬT theo nhóm ở pam-driver).
 * fix(login): bump `zpw_ver` 671 → 685 cho khớp API version hiện hành của Zalo
   (port zca-js PR #327) — version cũ bị server từ chối gây lỗi session/đăng nhập.
 * fix(login): suy `sec-ch-ua` và `sec-ch-ua-platform` trực tiếp từ User-Agent

@@ -42,7 +42,15 @@ class ZaloGroupNotificationRepository {
   /// Đọc thẳng từ store thay vì đối chiếu với một danh sách nhóm/thread có sẵn:
   /// đây mới là nguồn sự thật của tập opt-in, nên caller không phụ thuộc vào
   /// việc group catalog hay thread store đã nạp xong hay chưa.
-  Future<Set<String>> enabledIds(String accountId) async {
+  Future<Set<String>> enabledIds(String accountId) =>
+      _idsWithValue(accountId, true);
+
+  /// Mọi thread id mà override đang là `false` cho [accountId]: người dùng đã
+  /// chủ động tắt. App có mặc định BẬT dùng tập này làm blacklist.
+  Future<Set<String>> disabledIds(String accountId) =>
+      _idsWithValue(accountId, false);
+
+  Future<Set<String>> _idsWithValue(String accountId, bool value) async {
     final normalizedAccountId = accountId.trim();
     if (normalizedAccountId.isEmpty) {
       return const <String>{};
@@ -50,22 +58,22 @@ class ZaloGroupNotificationRepository {
 
     final storage = await _storageBuilder();
     final prefix = '$_keyPrefix.$normalizedAccountId.';
-    final enabled = <String>{};
+    final ids = <String>{};
     for (final key in storage.getKeys()) {
       if (!key.startsWith(prefix)) {
         continue;
       }
-      if (storage.getBool(key) != true) {
+      if (storage.getBool(key) != value) {
         continue;
       }
 
       final threadId = key.substring(prefix.length);
       if (threadId.isNotEmpty) {
-        enabled.add(threadId);
+        ids.add(threadId);
       }
     }
 
-    return enabled;
+    return ids;
   }
 
   Future<void> clearAll() async {
