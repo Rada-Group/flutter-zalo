@@ -1040,3 +1040,14 @@ dynamic _deepFreezeValue(dynamic value) {
 
   return value;
 }
+
+/// One page of group messages from the realtime socket's catch-up request.
+class ZaloOldGroupMessages {
+  const ZaloOldGroupMessages({required this.messages, required this.hasMore});
+
+  /// Oldest first, across every group.
+  final List<ZaloMessage> messages;
+
+  /// True when Zalo has more messages after the last one of this page.
+  final bool hasMore;
+}

@@ -36,6 +36,18 @@ class _FakeWsConnection implements ZaloWebSocketConnection {
     }
   }
 
+  /// Simulate the server handing over the cipher key (socket ready).
+  void serverSendKey() {
+    _controller.add(
+      buildZaloRealtimeFrame(
+        version: 1,
+        cmd: 1,
+        subCmd: 1,
+        data: {'key': 'AQEBAQEBAQEBAQEBAQEBAQ=='},
+      ),
+    );
+  }
+
   /// Simulate the *server* closing the socket with [code] (not a manual stop).
   void serverClose(int code, [String reason = '']) {
     _closeCode = code;
@@ -204,10 +216,14 @@ void main() {
 
       client.startListener().listen((_) {}, onError: (_) {});
       async.flushMicrotasks();
+      sockets.last.serverSendKey();
+      async.flushMicrotasks();
       expect(connected, 1);
 
       sockets.last.serverClose(1006, 'drop');
-      async.elapse(const Duration(minutes: 2));
+      async.elapse(const Duration(seconds: 30));
+      async.flushMicrotasks();
+      sockets.last.serverSendKey();
       async.flushMicrotasks();
 
       expect(sockets.length, greaterThanOrEqualTo(2));

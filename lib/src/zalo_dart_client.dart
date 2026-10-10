@@ -114,9 +114,9 @@ class ZaloDartClient {
   final StreamController<void> _listenerConnectedController =
       StreamController<void>.broadcast();
 
-  /// Fires every time the realtime socket opens successfully, including
-  /// silent reconnects inside this client, so callers can catch up on what
-  /// they missed while it was down.
+  /// Fires every time the realtime socket is ready (open and its cipher key
+  /// received), including silent reconnects inside this client, so callers
+  /// can catch up on what they missed while it was down.
   Stream<void> get listenerConnected => _listenerConnectedController.stream;
 
   bool get isInitialized => _secretKey != null && _secretKey!.isNotEmpty;
@@ -328,6 +328,32 @@ class ZaloDartClient {
         'preIds': const <String>[],
       },
     );
+  }
+
+  Completer<ZaloOldGroupMessages>? _oldGroupMessagesWaiter;
+
+  /// Asks the realtime socket for group messages across every group that
+  /// arrived after [lastMessageId] (cmd 511, as Zalo Web does after a
+  /// reconnect), oldest first, one page per call. Throws a [TimeoutException]
+  /// when no reply arrives, or a [StateError] when the socket is not up yet.
+  Future<ZaloOldGroupMessages> fetchOldGroupMessages({
+    String? lastMessageId,
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    if (_listenerSocket == null || _cipherKey == null) {
+      throw StateError('realtime socket is not ready');
+    }
+    final previous = _oldGroupMessagesWaiter;
+    if (previous != null && !previous.isCompleted) {
+      return previous.future.timeout(timeout);
+    }
+    final waiter = Completer<ZaloOldGroupMessages>();
+    _oldGroupMessagesWaiter = waiter;
+    requestOldMessages(
+      threadType: ZaloThreadType.group,
+      lastMessageId: lastMessageId,
+    );
+    return waiter.future.timeout(timeout);
   }
 
   Future<ZaloSendResult> sendMessage({
@@ -801,9 +827,6 @@ class ZaloDartClient {
 
       _listenerSocket = socket;
       _listenerRetryCounts.clear();
-      if (!_listenerConnectedController.isClosed) {
-        _listenerConnectedController.add(null);
-      }
       zaloLog(
         'Realtime listener socket connected',
         name: _logName,
@@ -899,6 +922,11 @@ class ZaloDartClient {
           data: {'keyLength': _cipherKey?.length ?? 0},
         );
         _startRealtimePing();
+        // Only now can the socket decode events and answer requests such as
+        // fetchOldGroupMessages, so this is when callers may catch up.
+        if (!_listenerConnectedController.isClosed) {
+          _listenerConnectedController.add(null);
+        }
         return;
       }
 
@@ -956,6 +984,33 @@ class ZaloDartClient {
         );
         for (final item in groupMsgs) {
           _messageController?.add(ZaloMessage.fromGroup(uid, _asMap(item)));
+        }
+        return;
+      }
+
+      if (frame.cmd == 511 && frame.subCmd == 1) {
+        final payload = await _tryDecodeRealtimeEvent(parsed);
+        final dataMap = payload == null
+            ? const <String, dynamic>{}
+            : _unwrapRealtimeData(payload);
+        final groupMsgs = _asDynamicList(dataMap['groupMsgs']);
+        zaloLog(
+          'Received old group messages',
+          name: _logName,
+          data: {'count': groupMsgs.length, 'keys': dataMap.keys.toList()},
+        );
+        final waiter = _oldGroupMessagesWaiter;
+        _oldGroupMessagesWaiter = null;
+        if (waiter != null && !waiter.isCompleted) {
+          waiter.complete(
+            ZaloOldGroupMessages(
+              messages: [
+                for (final item in groupMsgs)
+                  ZaloMessage.fromGroup(uid, _asMap(item)),
+              ],
+              hasMore: _asInt(dataMap['more']) == 1,
+            ),
+          );
         }
         return;
       }
