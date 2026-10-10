@@ -189,4 +189,31 @@ void main() {
       );
     });
   });
+
+  test('listenerConnected fires on the first connect and on every reconnect',
+      () {
+    fakeAsync((async) {
+      final sockets = <_FakeWsConnection>[];
+      final client = _buildClient((uri, {headers}) async {
+        final socket = _FakeWsConnection();
+        sockets.add(socket);
+        return socket;
+      });
+      var connected = 0;
+      client.listenerConnected.listen((_) => connected++);
+
+      client.startListener().listen((_) {}, onError: (_) {});
+      async.flushMicrotasks();
+      expect(connected, 1);
+
+      sockets.last.serverClose(1006, 'drop');
+      async.elapse(const Duration(minutes: 2));
+      async.flushMicrotasks();
+
+      expect(sockets.length, greaterThanOrEqualTo(2));
+      expect(connected, sockets.length);
+      client.stopListener();
+      async.flushMicrotasks();
+    });
+  });
 }

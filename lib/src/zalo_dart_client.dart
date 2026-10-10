@@ -111,6 +111,13 @@ class ZaloDartClient {
   bool _isHandlingSessionExpiry = false;
   bool _isHandlingSessionInvalidation = false;
   final Map<int, int> _listenerRetryCounts = <int, int>{};
+  final StreamController<void> _listenerConnectedController =
+      StreamController<void>.broadcast();
+
+  /// Fires every time the realtime socket opens successfully, including
+  /// silent reconnects inside this client, so callers can catch up on what
+  /// they missed while it was down.
+  Stream<void> get listenerConnected => _listenerConnectedController.stream;
 
   bool get isInitialized => _secretKey != null && _secretKey!.isNotEmpty;
 
@@ -794,6 +801,9 @@ class ZaloDartClient {
 
       _listenerSocket = socket;
       _listenerRetryCounts.clear();
+      if (!_listenerConnectedController.isClosed) {
+        _listenerConnectedController.add(null);
+      }
       zaloLog(
         'Realtime listener socket connected',
         name: _logName,
